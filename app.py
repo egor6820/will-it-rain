@@ -22,6 +22,7 @@ import numpy as np
 import requests
 import base64
 import datetime
+import os  # додано для BACKEND_URL
 
 # Optional mapping libraries
 USE_FOLIUM = False
@@ -290,6 +291,53 @@ with st.spinner(I18N[lang]["loading_local"]):
 city_lats = cities_df["lat"].to_numpy()
 city_lons = cities_df["lon"].to_numpy()
 city_disp = cities_df["display_name"].to_numpy()
+
+# --------------------
+# NEW: helper functions to extract features and call backend
+# --------------------
+def extract_simple_features_from_weather(w):
+    """
+    Повертає прості агрегати: max_temp, avg_hum, max_wind, mean_precip_prob, mean_uv
+    Формат повернення — словник, який бекенд чекає: {"temp":..., "hum":..., "wind":..., "precip":..., "uv":...}
+    """
+    if not w:
+        return None
+    hourly = w.get("hourly", {})
+    temps = hourly.get("temperature_2m", [])
+    humid = hourly.get("relative_humidity_2m", [])
+    winds = hourly.get("wind_speed_10m", [])
+    precip_prob = hourly.get("precipitation_probability", [])
+    uvs = hourly.get("uv_index", [])
+    try:
+        max_temp = float(max(temps)) if temps else 0.0
+        avg_hum = float(np.mean(humid)) if len(humid) else 0.0
+        max_wind = float(max(winds)) if winds else 0.0
+        mean_precip = float(np.mean(precip_prob)) if precip_prob else 0.0
+        mean_uv = float(np.mean(uvs)) if uvs else 0.0
+        return {"temp": max_temp, "hum": avg_hum, "wind": max_wind, "precip": mean_precip, "uv": mean_uv}
+    except Exception:
+        return None
+
+def call_backend_prediction(aggregates):
+    """
+    Відправляє POST /predict на бекенд.
+    BACKEND_URL можна задати через змінну оточення BACKEND_URL;
+    Повертає JSON-відповідь або словник з 'error'.
+    """
+    if not aggregates:
+        return None
+    backend_url = os.environ.get("BACKEND_URL", "https://will-it-rain-x63f.onrender.com")
+    try:
+        r = requests.post(f"{backend_url.rstrip('/')}/predict", json=aggregates, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            try:
+                return {"error": f"{r.status_code} {r.text}"}
+            except Exception:
+                return {"error": f"HTTP {r.status_code}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 # --------------------
 # UI layout: header / search / options
@@ -564,6 +612,16 @@ if st.session_state.pending or st.session_state.confirmed:
         st.markdown("---")
         if st.session_state.weather:
             w = st.session_state.weather
+
+            # --- NEW: call backend prediction here ---
+            aggregates = extract_simple_features_from_weather(st.session_state.weather)
+            pred_resp = None
+            if aggregates:
+                pred_resp = call_backend_prediction(aggregates)
+                # show debug if error
+                if pred_resp and pred_resp.get("error"):
+                    st.write("Prediction error:", pred_resp.get("error"))
+
             cur = w.get("current_weather", {})
             if cur:
                 st.metric("🌡 Temperature (now)", f"{cur.get('temperature')} °C")
@@ -604,6 +662,12 @@ if st.session_state.pending or st.session_state.confirmed:
                 alt_local = st.session_state.pending.get("altitude_m")
             if alt_local is not None:
                 st.write(f"⛰ Altitude (OpenTopoData): {alt_local:.1f} m")
+
+            # Show ML prediction result (if any)
+            if pred_resp and isinstance(pred_resp, dict) and pred_resp.get("prediction"):
+                st.markdown(f"### ML prediction: **{pred_resp['prediction']}**")
+                if pred_resp.get("probs"):
+                    st.write("Probabilities:", pred_resp["probs"])
         else:
             st.info(I18N[lang]["no_weather"])
 
