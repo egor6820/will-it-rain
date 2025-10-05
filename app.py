@@ -1,31 +1,25 @@
 # app.py
+""" NASA Weather Globe — final app (local cities only, Folium preferred)
+Includes:
+ - fixed header with aligned Search button (st.form + CSS)
+ - backend ML call via BACKEND_URL env var (POST /predict)
+ - heuristics fallback & protected ML display
 """
-NASA Weather Globe — final merged app (Streamlit frontend)
-Features:
- - Local data/cities.json (fallback list included)
- - Folium + streamlit_folium for draggable marker & clicks (pydeck fallback)
- - Search by local DB or coordinates (Nominatim fallback)
- - Open-Meteo for weather, OpenTopoData for altitude (best-effort)
- - Heuristic risk scores + call to backend /predict (BACKEND_URL env)
- - Friendly UI, CSV export, MRU, nearest suggestions
-"""
-
 from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
-
 import os
-import textwrap
-import base64
 import datetime
+import textwrap
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
+import base64
 
-# Optional mapping libs
+# Try optional mapping libs
 USE_FOLIUM = False
 USE_STREAMLIT_FOLIUM = False
 try:
@@ -69,14 +63,14 @@ NEAREST_SUGGESTIONS = 6
 
 USER_AGENT = "streamlit-nasa-globe/1.0 (+https://example)"
 
-# Backend URL (set via env in Render). Default to localhost for local dev.
-BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
+# Backend URL environment var
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 # -------------------------
-# i18n
+# Internationalization (small)
 # -------------------------
 LANGS = ["en", "ua"]
-DEFAULT_LANG = "ua"
+DEFAULT_LANG = "ua"  # default Ukrainian
 I18N: Dict[str, Dict[str, str]] = {
     "en": {
         "title": "NASA Weather Globe",
@@ -285,15 +279,15 @@ if "mru" not in st.session_state:
     st.session_state.mru = []
 if "map_used" not in st.session_state:
     st.session_state.map_used = False
-if "forecast_days" not in st.session_state:
-    st.session_state["forecast_days"] = 7
 
 def get_lang() -> str:
     return st.session_state.lang if "lang" in st.session_state else DEFAULT_LANG
 
 lang = get_lang()
 
+# -------------------------
 # Load cities
+# -------------------------
 with st.spinner(I18N[lang]["loading_local"]):
     cities_df = load_local_cities()
 
@@ -302,7 +296,7 @@ city_lons = cities_df["lon"].to_numpy() if not cities_df.empty else np.array([])
 city_disp = cities_df["display_name"].to_numpy() if not cities_df.empty else np.array([])
 
 # -------------------------
-# Helper: extract features from weather (same as backend expects)
+# ML helpers: extract features, call backend, heuristics
 # -------------------------
 def extract_simple_features_from_weather(w: Dict[str,Any]):
     if not w:
@@ -323,33 +317,24 @@ def extract_simple_features_from_weather(w: Dict[str,Any]):
     except Exception:
         return None
 
-# -------------------------
-# ML backend call
-# -------------------------
-def call_backend_prediction(aggregates: Dict[str,Any], timeout: int = 12) -> Optional[Dict[str,Any]]:
-    """Call backend /predict and return parsed JSON or dict with error."""
+def call_backend_prediction(aggregates: Dict[str,Any]):
     if not aggregates:
         return None
     try:
-        url = f"{BACKEND_URL}/predict"
-        r = requests.post(url, json=aggregates, timeout=timeout, headers={"User-Agent": USER_AGENT})
-    except Exception as e:
-        return {"error": f"Request error: {e}"}
-    try:
+        # Backend expects JSON with fields like temp, hum, wind, precip, uv
+        r = requests.post(f"{BACKEND_URL.rstrip('/')}/predict", json=aggregates, timeout=12)
         if r.status_code == 200:
             return r.json()
         else:
-            # Attempt parse JSON error response
+            # try to extract JSON error message
             try:
-                return {"error": f"{r.status_code} {r.text}"}
+                j = r.json()
+                return {"error": f"{r.status_code} {j.get('detail', r.text)}"}
             except Exception:
-                return {"error": f"HTTP {r.status_code}"}
+                return {"error": f"{r.status_code} {r.text}"}
     except Exception as e:
-        return {"error": f"Response parsing failed: {e}"}
+        return {"error": str(e)}
 
-# -------------------------
-# Heuristics: compute simple scores 0..1
-# -------------------------
 def compute_heuristic_scores(weather: Dict[str,Any]) -> Dict[str,float]:
     scores = {"very_hot":0.0,"very_cold":0.0,"very_windy":0.0,"very_wet":0.0,"very_uncomfortable":0.0}
     if not weather:
@@ -384,7 +369,7 @@ def pct(v: float) -> int:
     return int(round(100 * float(v)))
 
 # -------------------------
-# UI CSS + header layout
+# UI CSS + header layout (updated: form + aligned button/select)
 # -------------------------
 st.markdown(
     f"""
@@ -398,12 +383,31 @@ st.markdown(
     .map-area {{ padding: 6px 28px 40px 28px; }}
     .sidebar .element-container {{ padding-top: 8px !important; }}
     .stFMap {{ height: {MAP_HEIGHT}px !important; }}
+
+    /* Align Streamlit widgets: input/select/button heights and reduce top margins */
+    div.stTextInput > div > div > input {{
+        height: 38px !important;
+        padding: 6px 8px !important;
+    }}
+    div.stSelectbox > div > div > select {{
+        height: 38px !important;
+        padding: 6px 8px !important;
+    }}
+    button.stButton > button, div.stButton > button {{
+        height: 38px !important;
+        padding: 6px 12px !important;
+        margin-top: 0px !important;
+    }}
+    @media (max-width: 800px) {{
+        .search-row {{ flex-wrap:wrap; gap:8px; }}
+        div.stSelectbox > div > div > select {{ min-width: 90px; }}
+    }}
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Header
+# Header: logo + title + search form (form ensures aligned submit)
 col_a, col_b, col_c = st.columns([2, 7, 1])
 with col_a:
     st.markdown('<div class="title-area">', unsafe_allow_html=True)
@@ -425,71 +429,48 @@ with col_a:
 with col_b:
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     st.markdown(f"<div style='font-size:14px; color:var(--secondary-text-color)'>{I18N[lang]['search_placeholder']}</div>", unsafe_allow_html=True)
-    search_col, btn_col, lang_col = st.columns([8, 1.2, 1.2])
-    with search_col:
-        search_input = st.text_input("", key="header_search", placeholder=I18N[lang]["search_placeholder"], label_visibility="collapsed")
-    def process_query(q: str):
-        q = (q or "").strip()
-        if not q:
-            return
-        def coords_try(s: str) -> Optional[Tuple[float, float]]:
-            s2 = s.replace(",", " ").strip()
-            parts = s2.split()
-            if len(parts) == 2:
-                try:
-                    return float(parts[0]), float(parts[1])
-                except Exception:
-                    return None
-            return None
-        c = coords_try(q)
-        if c:
-            lat_q, lon_q = c
-            st.session_state.pending = {"lat": float(lat_q), "lon": float(lon_q), "city": f"{lat_q:.5f},{lon_q:.5f}"}
-            st.session_state.nearby = []
-            st.session_state.weather = get_weather_open_meteo(lat_q, lon_q, days=st.session_state.get("forecast_days", 7))
-            st.session_state.pending["altitude_m"] = get_altitude_opentopo(lat_q, lon_q)
-            return
-        # local substring search
-        suggestions_local = []
-        if not cities_df.empty:
-            mask = cities_df["display_name"].str.lower().str.contains(q.lower())
-            local_hits = cities_df[mask].head(200)
-            for _, r in local_hits.iterrows():
-                suggestions_local.append(("LOCAL", r["display_name"], float(r["lat"]), float(r["lon"])))
-        # if few local hits, call nominatim
-        suggestions = suggestions_local
-        if len(suggestions_local) < 10:
-            nom = nominatim_search(q, limit=8)
-            for it in nom:
-                try:
-                    name = it.get("display_name", "")
-                    latn = float(it.get("lat"))
-                    lonn = float(it.get("lon"))
-                    suggestions.append(("NOM", name, latn, lonn))
-                except Exception:
-                    continue
-        if suggestions:
-            kind, name, latn, lonn = suggestions[0]
-            st.session_state.pending = {"lat": float(latn), "lon": float(lonn), "city": name}
-            st.session_state.nearby = []
-            st.session_state.weather = get_weather_open_meteo(latn, lonn, days=st.session_state.get("forecast_days", 7))
-            st.session_state.pending["altitude_m"] = get_altitude_opentopo(latn, lonn)
-            return
-        st.warning("No matches found for query.")
-    with btn_col:
-        if st.button(I18N[lang]["search_button"], key="header_search_btn"):
-            qval = st.session_state.get("header_search", "")
-            process_query(qval)
-    with lang_col:
-        lang_select = st.selectbox("", options=["ua", "en"], index=0 if lang == "ua" else 1, key="lang_select_small")
-        if lang_select != st.session_state.lang:
-            st.session_state.lang = lang_select
-            lang = get_lang()
+
+    # Use a form so the input and button submit together and appear aligned.
+    with st.form(key="header_search_form", clear_on_submit=False):
+        row_col, btn_col, lang_col = st.columns([8, 1.2, 1.2])
+        with row_col:
+            header_search_val = st.text_input("", key="header_search", placeholder=I18N[lang]["search_placeholder"], label_visibility="collapsed")
+        with btn_col:
+            submitted = st.form_submit_button(I18N[lang]["search_button"])
+        with lang_col:
+            lang_select = st.selectbox("", options=["ua", "en"], index=0 if lang == "ua" else 1, key="lang_select_small", label_visibility="collapsed")
+            if lang_select != st.session_state.lang:
+                st.session_state.lang = lang_select
+                lang = get_lang()
+
+        if submitted:
+            qval = header_search_val or st.session_state.get("header_search", "")
+            def coords_try_local(s: str) -> Optional[Tuple[float,float]]:
+                s2 = s.replace(",", " ").strip()
+                parts = s2.split()
+                if len(parts) == 2:
+                    try:
+                        return float(parts[0]), float(parts[1])
+                    except Exception:
+                        return None
+                return None
+            c = coords_try_local(qval)
+            if c:
+                lat_q, lon_q = c
+                st.session_state.pending = {"lat": float(lat_q), "lon": float(lon_q), "city": f"{lat_q:.5f},{lon_q:.5f}"}
+                st.session_state.nearby = []
+                st.session_state.weather = get_weather_open_meteo(lat_q, lon_q, days=st.session_state.get("forecast_days", 7))
+                st.session_state.pending["altitude_m"] = get_altitude_opentopo(lat_q, lon_q)
+            else:
+                # set marker to trigger original processing later
+                st.session_state.header_search = qval
+                st.session_state._last_search_trigger = datetime.datetime.utcnow().isoformat()
 with col_c:
     st.write("")
 
 st.markdown("<hr style='margin:8px 0 12px 0'>", unsafe_allow_html=True)
 
+# Expose explicit nominatim fallback button (below search row)
 st.markdown("<div style='padding-left:28px; padding-top:8px'>", unsafe_allow_html=True)
 if st.button(I18N[lang]["search_nominatim"], key="nominatim_fallback"):
     qval = st.session_state.get("header_search", "").strip()
@@ -507,7 +488,7 @@ if st.button(I18N[lang]["search_nominatim"], key="nominatim_fallback"):
 st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------------
-# Sidebar + controls
+# Sidebar: map options + weather summary + controls
 # -------------------------
 with st.sidebar:
     st.header(I18N[lang]["map_options"])
@@ -516,8 +497,12 @@ with st.sidebar:
     base_map = st.selectbox(I18N[lang]["base_map"], ["Hybrid (Esri satellite)", "Streets (OSM)"])
     st.markdown(f"City DB: {len(cities_df):,} entries")
     st.markdown("---")
+
+    if "forecast_days" not in st.session_state:
+        st.session_state["forecast_days"] = 7
     forecast_days = st.slider("Forecast days", min_value=1, max_value=14, value=st.session_state["forecast_days"], key="sidebar_forecast_days")
     st.session_state["forecast_days"] = forecast_days
+
     st.subheader("Selected")
     if st.session_state.confirmed:
         st.write("Confirmed:", st.session_state.confirmed.get("city", "Unknown"))
@@ -526,6 +511,7 @@ with st.sidebar:
         st.write("Pending:", st.session_state.pending.get("city", "Unknown"))
         st.write(f"{I18N[lang]['coords_label']}: {st.session_state.pending['lat']:.6f}, {st.session_state.pending['lon']:.6f}")
     st.markdown("---")
+
     if st.button("Center to confirmed", key="center_confirmed_btn"):
         if st.session_state.confirmed:
             st.session_state.pending = st.session_state.confirmed.copy()
@@ -533,6 +519,7 @@ with st.sidebar:
         st.session_state.pending = None
         st.session_state.nearby = []
     st.markdown("---")
+
     st.subheader("Weather")
     if st.session_state.weather:
         w = st.session_state.weather
@@ -556,6 +543,7 @@ with st.sidebar:
                 pass
             csv = df_hour.to_csv(index=False).encode("utf-8")
             st.download_button(I18N[lang]["download_csv"], data=csv, file_name="hourly.csv", mime="text/csv")
+
         daily = w.get("daily", {})
         if daily and "time" in daily:
             df_daily = pd.DataFrame({
@@ -572,6 +560,7 @@ with st.sidebar:
                 pass
     else:
         st.info(I18N[lang]["no_weather"])
+
     st.markdown("---")
     alt_local = None
     if st.session_state.confirmed and "altitude_m" in st.session_state.confirmed:
@@ -580,6 +569,7 @@ with st.sidebar:
         alt_local = st.session_state.pending.get("altitude_m")
     if alt_local is not None:
         st.write(f"⛰ Altitude (OpenTopoData): {alt_local:.1f} m")
+
     if st.button(I18N[lang]["confirm"], key="sidebar_confirm_btn"):
         if st.session_state.pending:
             st.session_state.confirmed = st.session_state.pending.copy()
@@ -587,6 +577,7 @@ with st.sidebar:
             label_city = st.session_state.confirmed.get("city")
             if label_city and label_city not in st.session_state.mru:
                 st.session_state.mru.append(label_city)
+
     st.markdown("---")
     st.subheader(I18N[lang]["recent"])
     for r in st.session_state.mru[-8:][::-1]:
@@ -623,15 +614,34 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
             control=False,
             max_zoom=19,
         ).add_to(m)
+
     if show_modis:
         tpl = NASA_GIBS_TEMPLATE.format(layer=GIBS_LAYER, date=tile_date.isoformat())
-        folium.raster_layers.TileLayer(tiles=tpl, attr="NASA GIBS MODIS", name="MODIS LST", overlay=True, control=False, opacity=0.6, max_zoom=9).add_to(m)
+        folium.raster_layers.TileLayer(
+            tiles=tpl,
+            attr="NASA GIBS MODIS",
+            name="MODIS LST",
+            overlay=True,
+            control=False,
+            opacity=0.6,
+            max_zoom=9,
+        ).add_to(m)
+
     if st.session_state.nearby:
         cluster = MarkerCluster().add_to(m)
         for it in st.session_state.nearby:
             col = temp_to_hex(it.get("temp"))
             popup_html = f"{it['display_name']}<br>{it.get('dist_km', 0):.1f} km"
-            folium.CircleMarker(location=(it["lat"], it["lon"]), radius=6, color=col, fill=True, fill_color=col, fill_opacity=0.9, popup=popup_html).add_to(cluster)
+            folium.CircleMarker(
+                location=(it["lat"], it["lon"]),
+                radius=6,
+                color=col,
+                fill=True,
+                fill_color=col,
+                fill_opacity=0.9,
+                popup=popup_html,
+            ).add_to(cluster)
+
     popup_brief = None
     if st.session_state.weather and st.session_state.confirmed:
         try:
@@ -642,12 +652,21 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
             popup_brief = f"<b>{st.session_state.confirmed.get('city','')}</b><br>🌡 {temp_now}°C — 💨 {wind} m/s"
         except Exception:
             popup_brief = None
-    marker = folium.Marker(location=[active["lat"], active["lon"]], draggable=True, tooltip="Drag marker to adjust coordinates", icon=folium.Icon(color="red", icon="map-marker"))
+
+    marker = folium.Marker(
+        location=[active["lat"], active["lon"]],
+        draggable=True,
+        tooltip="Drag marker to adjust coordinates",
+        icon=folium.Icon(color="red", icon="map-marker"),
+    )
     if popup_brief:
         marker.add_child(folium.Popup(popup_brief, max_width=320))
     marker.add_to(m)
+
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
+
     map_data = st_folium(m, width="100%", height=MAP_HEIGHT, returned_objects=["last_clicked", "last_marker", "last_marker_drag"])
+
     if map_data:
         clicked = map_data.get("last_clicked")
         if clicked:
@@ -659,11 +678,17 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
                     idxs = np.argsort(d)[:NEAREST_SUGGESTIONS]
                     nearest = []
                     for i in idxs:
-                        nearest.append({"display_name": city_disp[i], "lat": float(city_lats[i]), "lon": float(city_lons[i]), "dist_km": float(d[i])})
+                        nearest.append({
+                            "display_name": city_disp[i],
+                            "lat": float(city_lats[i]),
+                            "lon": float(city_lons[i]),
+                            "dist_km": float(d[i])
+                        })
                     st.session_state.nearby = nearest
                 st.session_state.weather = get_weather_open_meteo(latc, lonc, days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(latc, lonc)
                 st.session_state.map_used = True
+
         drag = map_data.get("last_marker_drag") or map_data.get("last_marker")
         if drag:
             latm = drag.get("lat"); lonm = drag.get("lng")
@@ -674,7 +699,12 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
                     idxs = np.argsort(d)[:NEAREST_SUGGESTIONS]
                     nearest = []
                     for i in idxs:
-                        nearest.append({"display_name": city_disp[i], "lat": float(city_lats[i]), "lon": float(city_lons[i]), "dist_km": float(d[i])})
+                        nearest.append({
+                            "display_name": city_disp[i],
+                            "lat": float(city_lats[i]),
+                            "lon": float(city_lons[i]),
+                            "dist_km": float(d[i])
+                        })
                     st.session_state.nearby = nearest
                 st.session_state.weather = get_weather_open_meteo(latm, lonm, days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(latm, lonm)
@@ -695,7 +725,7 @@ else:
 st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------------
-# After map: quick summary + ML block
+# After map: left/right columns summary and quick actions
 # -------------------------
 left_col, right_col = st.columns([3, 1])
 with left_col:
@@ -757,148 +787,6 @@ with left_col:
         except Exception:
             pass
 
-    # --------------------
-    # ML + heuristics block
-    # --------------------
-    if st.session_state.weather:
-        aggregates = extract_simple_features_from_weather(st.session_state.weather)
-        pred_resp = None
-        if aggregates:
-            pred_resp = call_backend_prediction(aggregates)
-        heur = compute_heuristic_scores(st.session_state.weather)
-
-        st.markdown("---")
-        st.subheader("🔮 Weather risk — ML + Heuristics")
-        hcol1, hcol2 = st.columns([1, 1.2])
-        with hcol1:
-            st.write("**Local heuristics (quick)**")
-            heuristic_items = [
-                ("very_hot","Very hot","High maximum temperature expected"),
-                ("very_cold","Very cold","Very low minimum temperature"),
-                ("very_windy","Very windy","Strong peak winds possible"),
-                ("very_wet","Very wet","High precipitation probability"),
-                ("very_uncomfortable","Very uncomfortable","Heat + humidity discomfort"),
-            ]
-            for key, label, desc in heuristic_items:
-                score = heur.get(key, 0.0)
-                st.markdown(f"**{label}** — {pct(score)}%")
-                st.progress(pct(score))
-                st.caption(desc)
-            st.caption("Heuristics computed locally from Open-Meteo hourly aggregates. These are quick indicators, not the ML model's prediction.")
-        with hcol2:
-            st.write("**ML model response**")
-            if pred_resp is None:
-                st.info("ML: no aggregates or backend unavailable.")
-            else:
-                if isinstance(pred_resp, dict) and pred_resp.get("error"):
-                    st.error(f"Prediction error (backend): {pred_resp.get('error')}")
-                else:
-                    pred_raw = pred_resp.get("prediction") if isinstance(pred_resp, dict) else pred_resp
-                    probs = pred_resp.get("probs") if isinstance(pred_resp, dict) else None
-                    note = pred_resp.get("note") if isinstance(pred_resp, dict) else None
-                    original = pred_resp.get("original_features") if isinstance(pred_resp, dict) else None
-                    used = pred_resp.get("used_features") if isinstance(pred_resp, dict) else None
-
-                    display_pred = pred_raw
-                    pred_is_num = False
-                    try:
-                        display_pred = float(pred_raw)
-                        pred_is_num = True
-                    except Exception:
-                        pred_is_num = False
-
-                    if pred_is_num:
-                        score_val = round(display_pred, 3)
-                        st.metric(label="Risk score (model)", value=f"{score_val}")
-                        def interpret_numeric_pred(v):
-                            try:
-                                vv = float(v)
-                            except Exception:
-                                return "unknown"
-                            if vv >= 2.0:
-                                return "Very likely"
-                            if vv >= 1.0:
-                                return "Likely"
-                            if vv >= 0.0:
-                                return "Possible"
-                            if vv < 0.0:
-                                return "Unlikely"
-                            return "unknown"
-                        label_text = interpret_numeric_pred(display_pred)
-                        if label_text == "Very likely":
-                            st.warning(f"Interpreted: {label_text}")
-                        elif label_text == "Likely":
-                            st.info(f"Interpreted: {label_text}")
-                        elif label_text == "Possible":
-                            st.success(f"Interpreted: {label_text}")
-                        else:
-                            st.info(f"Interpreted: {label_text}")
-                    else:
-                        st.write("Prediction (raw):")
-                        st.write(display_pred)
-
-                    if probs:
-                        try:
-                            dfp = pd.DataFrame(probs)
-                            st.markdown("**Probabilities:**")
-                            st.dataframe(dfp)
-                        except Exception:
-                            st.write("Probabilities:")
-                            st.write(probs)
-
-                    if note:
-                        st.warning(f"Feature adaptation: {note}")
-
-                    # Friendly feature tables
-                    FEATURE_DEFS = [
-                        ("temp", "Max temp (°C)", "Maximum hourly temperature"),
-                        ("hum", "Mean humidity (%)", "Average relative humidity"),
-                        ("wind", "Max wind (m/s)", "Peak wind speed"),
-                        ("precip", "Mean precip prob (%)", "Average precipitation probability"),
-                        ("uv", "Mean UV index", "Average UV index"),
-                    ]
-                    def _features_to_df(vals):
-                        rows = []
-                        for i, v in enumerate(list(vals or [])):
-                            name, label, desc = FEATURE_DEFS[i] if i < len(FEATURE_DEFS) else (f"f{i}", f"f{i}", "")
-                            if name == "temp":
-                                unit = "°C"
-                            elif name in ("hum", "precip"):
-                                unit = "%"
-                            elif name == "wind":
-                                unit = "m/s"
-                            elif name == "uv":
-                                unit = "index"
-                            else:
-                                unit = ""
-                            try:
-                                val = float(v)
-                            except Exception:
-                                val = v
-                            rows.append({"feature": f"f{i}", "name": name, "label": label, "value": val, "unit": unit, "description": desc})
-                        return pd.DataFrame(rows)
-                    try:
-                        df_orig = _features_to_df(original)
-                        if not df_orig.empty:
-                            st.markdown("**Original features sent (friendly):**")
-                            st.dataframe(df_orig.set_index("feature")[ ["label","value","unit","description"] ])
-                            legend_lines = [f"{r['feature']} → {r['label']}" for _, r in df_orig.iterrows()]
-                            st.caption("Feature mapping: " + ", ".join(legend_lines))
-                    except Exception:
-                        if original:
-                            st.write("Original features:")
-                            st.write(original)
-                    if used is not None:
-                        try:
-                            df_used = _features_to_df(used)
-                            if not df_used.empty:
-                                st.markdown("**Features used by model (friendly):**")
-                                st.dataframe(df_used.set_index("feature")[ ["label","value","unit","description"] ])
-                        except Exception:
-                            st.write("Used features:")
-                            st.write(used)
-                    with st.expander("Show full backend response (debug)"):
-                        st.json(pred_resp)
 with right_col:
     st.markdown("### Map quick")
     try:
@@ -916,4 +804,159 @@ with right_col:
 st.markdown("<hr>", unsafe_allow_html=True)
 st.caption("Local cities only (data/cities.json). For best draggable marker experience install folium & streamlit-folium.")
 
-# End of file
+# -------------------------
+# ML display: heuristics + backend call (in the sidebar area we already show weather)
+# We'll show this under the map if weather exists (friendly)
+# -------------------------
+if st.session_state.weather:
+    st.markdown("---")
+    st.subheader("🔮 Weather risk — ML + Heuristics")
+    hcol1, hcol2 = st.columns([1, 1.2])
+
+    heur = compute_heuristic_scores(st.session_state.weather)
+    aggregates = extract_simple_features_from_weather(st.session_state.weather)
+    pred_resp = None
+    if aggregates:
+        pred_resp = call_backend_prediction(aggregates)
+
+    with hcol1:
+        st.write("**Local heuristics (quick)**")
+        heuristic_items = [
+            ("very_hot","Very hot","High maximum temperature expected"),
+            ("very_cold","Very cold","Very low minimum temperature"),
+            ("very_windy","Very windy","Strong peak winds possible"),
+            ("very_wet","Very wet","High precipitation probability"),
+            ("very_uncomfortable","Very uncomfortable","Heat + humidity discomfort"),
+        ]
+        for key, label, desc in heuristic_items:
+            score = heur.get(key, 0.0)
+            st.markdown(f"**{label}** — {pct(score)}%")
+            st.progress(pct(score))
+            st.caption(desc)
+        st.caption("Heuristics computed locally from Open-Meteo hourly aggregates. These are quick indicators, not the ML model's prediction.")
+
+    with hcol2:
+        st.write("**ML model response**")
+        if pred_resp is None:
+            st.info("ML: no aggregates or backend unavailable.")
+        else:
+            if isinstance(pred_resp, dict) and pred_resp.get("error"):
+                st.error(f"Prediction error (backend): {pred_resp.get('error')}")
+            else:
+                pred_raw = pred_resp.get("prediction") if isinstance(pred_resp, dict) else pred_resp
+                probs = pred_resp.get("probs") if isinstance(pred_resp, dict) else None
+                note = pred_resp.get("note") if isinstance(pred_resp, dict) else None
+                original = pred_resp.get("original_features") if isinstance(pred_resp, dict) else None
+                used = pred_resp.get("used_features") if isinstance(pred_resp, dict) else None
+
+                display_pred = pred_raw
+                pred_is_num = False
+                try:
+                    display_pred = float(pred_raw)
+                    pred_is_num = True
+                except Exception:
+                    pred_is_num = False
+
+                if pred_is_num:
+                    score_val = round(display_pred, 3)
+                    st.metric(label="Risk score (model)", value=f"{score_val}")
+
+                    def interpret_numeric_pred(v):
+                        try:
+                            vv = float(v)
+                        except Exception:
+                            return "unknown"
+                        if vv >= 2.0:
+                            return "Very likely"
+                        if vv >= 1.0:
+                            return "Likely"
+                        if vv >= 0.0:
+                            return "Possible"
+                        if vv < 0.0:
+                            return "Unlikely"
+                        return "unknown"
+
+                    label_text = interpret_numeric_pred(display_pred)
+                    if label_text == "Very likely":
+                        st.warning(f"Interpreted: {label_text}")
+                    elif label_text == "Likely":
+                        st.info(f"Interpreted: {label_text}")
+                    elif label_text == "Possible":
+                        st.success(f"Interpreted: {label_text}")
+                    else:
+                        st.info(f"Interpreted: {label_text}")
+                else:
+                    st.write("Prediction (raw):")
+                    st.write(display_pred)
+
+                if probs:
+                    try:
+                        dfp = pd.DataFrame(probs)
+                        st.markdown("**Probabilities:**")
+                        st.dataframe(dfp)
+                    except Exception:
+                        st.write("Probabilities:")
+                        st.write(probs)
+
+                if note:
+                    st.warning(f"Feature adaptation: {note}")
+
+                FEATURE_DEFS = [
+                    ("temp", "Max temp (°C)", "Maximum hourly temperature"),
+                    ("hum", "Mean humidity (%)", "Average relative humidity"),
+                    ("wind", "Max wind (m/s)", "Peak wind speed"),
+                    ("precip", "Mean precip prob (%)", "Average precipitation probability"),
+                    ("uv", "Mean UV index", "Average UV index"),
+                ]
+
+                def _features_to_df(vals):
+                    rows = []
+                    for i, v in enumerate(list(vals)):
+                        name, label, desc = FEATURE_DEFS[i] if i < len(FEATURE_DEFS) else (f"f{i}", f"f{i}", "")
+                        if name == "temp":
+                            unit = "°C"
+                        elif name in ("hum", "precip"):
+                            unit = "%"
+                        elif name == "wind":
+                            unit = "m/s"
+                        elif name == "uv":
+                            unit = "index"
+                        else:
+                            unit = ""
+                        try:
+                            val = float(v)
+                        except Exception:
+                            val = v
+                        rows.append({"feature": f"f{i}", "name": name, "label": label, "value": val, "unit": unit, "description": desc})
+                    return pd.DataFrame(rows)
+
+                try:
+                    if original:
+                        df_orig = _features_to_df(original)
+                        st.markdown("**Original features sent (friendly):**")
+                        st.dataframe(df_orig.set_index("feature")[ ["label","value","unit","description"] ])
+                        legend_lines = [f"{r['feature']} → {r['label']}" for _, r in df_orig.iterrows()]
+                        st.caption("Feature mapping: " + ", ".join(legend_lines))
+                except Exception:
+                    if original:
+                        st.write("Original features:", original)
+
+                if used is not None:
+                    try:
+                        df_used = _features_to_df(used)
+                        st.markdown("**Features used by model (friendly):**")
+                        st.dataframe(df_used.set_index("feature")[ ["label","value","unit","description"] ])
+                    except Exception:
+                        st.write("Used features:", used)
+
+                with st.expander("Show full backend response (debug)"):
+                    st.json(pred_resp)
+
+# language toggle bottom-right small (legacy)
+def lang_toggle_ui():
+    cur = st.session_state.lang
+    other = "ua" if cur == "en" else "en"
+    if st.button(I18N[cur]["lang_toggle"]):
+        st.session_state.lang = other
+
+lang_toggle_ui()
