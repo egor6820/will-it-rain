@@ -17,4 +17,4 @@ ENV PORT=8501
 
 EXPOSE 8501
 
-CMD ["bash", "-lc", "streamlit run app.py --server.port=${PORT} --server.address=[::] --server.enableCORS=false"]
+CMD ["bash", "-lc", "streamlit run app.py --server.port=${PORT} --server.address=[::] --server.enableCORS=true --server.allowedOrigins=['https://willitrain.sudohub.dev']"]

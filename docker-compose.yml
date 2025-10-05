@@ -20,8 +20,8 @@ services:
     depends_on:
       - backend
     networks:
-      willitrain_network:
-        ipv6_address: fd00:d0:a6c9:4161::1
+      mynetwork:
+        #ipv6_address: 2a01:d0:a6c9:4161::1
 
   backend:
     build:
@@ -34,13 +34,14 @@ services:
       - "8000:8000"
     restart: unless-stopped
     networks:
-      willitrain_network:
-        ipv6_address: fd00:d0:a6c9:4161::2
+      mynetwork:
+        #ipv6_address: 2a01:d0:a6c9:4161::1
 
 networks:
-  willitrain_network:
+  mynetwork:
     enable_ipv6: true
     ipam:
       driver: default
       config:
-        - subnet: fd00:d0:a6c9:4161::/64
+        - subnet: 2a01:d0:a6c9:4161::/64
+          gateway: 2a01:d0:a6c9:4161::1
