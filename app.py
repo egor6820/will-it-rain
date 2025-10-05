@@ -638,7 +638,7 @@ if st.session_state.pending or st.session_state.confirmed:
                     "wind": hourly.get("wind_speed_10m", []),
                 })
                 st.markdown(f"### {I18N[lang]['next_48h']}")
-                st.line_chart(df_hour.set_index("time")[["temperature","precip_prob"]].head(48))
+                st.line_chart(df_hour.set_index("time")[['temperature','precip_prob']].head(48))
                 st.dataframe(df_hour.head(12).set_index("time"))
                 csv = df_hour.to_csv(index=False).encode("utf-8")
                 st.download_button(I18N[lang]["download_csv"], data=csv, file_name="hourly.csv", mime="text/csv")
@@ -681,18 +681,20 @@ if st.session_state.pending or st.session_state.confirmed:
 
             with hcol1:
                 st.write("**Local heuristics (quick)**")
-                # display each with progress
-                for key, label in [
-                    ("very_hot","Very hot"),
-                    ("very_cold","Very cold"),
-                    ("very_windy","Very windy"),
-                    ("very_wet","Very wet"),
-                    ("very_uncomfortable","Very uncomfortable"),
-                ]:
+                # display each with progress and short explanation
+                heuristic_items = [
+                    ("very_hot","Very hot","High maximum temperature expected"),
+                    ("very_cold","Very cold","Very low minimum temperature"),
+                    ("very_windy","Very windy","Strong peak winds possible"),
+                    ("very_wet","Very wet","High precipitation probability"),
+                    ("very_uncomfortable","Very uncomfortable","Heat + humidity discomfort"),
+                ]
+                for key, label, desc in heuristic_items:
                     score = heur.get(key, 0.0)
-                    st.write(f"{label}: {pct(score)}%")
+                    st.markdown(f"**{label}** — {pct(score)}%")
                     st.progress(pct(score))
-                st.caption("Heuristics computed locally from Open-Meteo hourly aggregates. For production use get ML feature definitions from ML team.")
+                    st.caption(desc)
+                st.caption("Heuristics computed locally from Open-Meteo hourly aggregates. These are quick indicators, not the ML model's prediction.")
 
             with hcol2:
                 st.write("**ML model response**")
@@ -710,53 +712,88 @@ if st.session_state.pending or st.session_state.confirmed:
                         original = pred_resp.get("original_features") if isinstance(pred_resp, dict) else None
                         used = pred_resp.get("used_features") if isinstance(pred_resp, dict) else None
 
-                        # display prediction (numeric or class)
+                        # display prediction cleanly
                         display_pred = pred_raw
                         pred_is_num = False
                         try:
-                            display_pred = round(float(pred_raw), 3)
+                            display_pred = float(pred_raw)
                             pred_is_num = True
                         except Exception:
                             pred_is_num = False
 
-                        st.markdown("**Prediction (raw):**")
-                        st.write(display_pred)
+                        # Big metric for numeric predictions
+                        if pred_is_num:
+                            # round and show
+                            score_val = round(display_pred, 3)
+                            st.metric(label="Risk score (model)", value=f"{score_val}")
 
-                        # If probabilities — show them
-                        if probs:
-                            st.write("**Probabilities:**")
-                            st.write(probs)
-
-                        # Interpret numeric prediction into simple labels (temporary)
-                        def interpret_numeric_pred(v):
-                            try:
-                                vv = float(v)
-                            except Exception:
+                            # interpretation
+                            def interpret_numeric_pred(v):
+                                try:
+                                    vv = float(v)
+                                except Exception:
+                                    return "unknown"
+                                if vv >= 2.0:
+                                    return "Very likely"
+                                if vv >= 1.0:
+                                    return "Likely"
+                                if vv >= 0.0:
+                                    return "Possible"
+                                if vv < 0.0:
+                                    return "Unlikely"
                                 return "unknown"
-                            if vv >= 2.0:
-                                return "Very likely"
-                            if vv >= 1.0:
-                                return "Likely"
-                            if vv >= 0.0:
-                                return "Possible"
-                            if vv < 0.0:
-                                return "Unlikely"
-                            return "unknown"
 
-                        label = interpret_numeric_pred(pred_raw)
-                        st.info(f"Interpreted: **{label}**")
+                            label_text = interpret_numeric_pred(display_pred)
+                            if label_text == "Very likely":
+                                st.warning(f"Interpreted: {label_text}")
+                            elif label_text == "Likely":
+                                st.info(f"Interpreted: {label_text}")
+                            elif label_text == "Possible":
+                                st.success(f"Interpreted: {label_text}")
+                            else:
+                                st.info(f"Interpreted: {label_text}")
+                        else:
+                            st.write("Prediction (raw):")
+                            st.write(display_pred)
+
+                        # If probabilities — show them in a compact table
+                        if probs:
+                            try:
+                                dfp = pd.DataFrame(probs)
+                                st.markdown("**Probabilities:**")
+                                st.dataframe(dfp)
+                            except Exception:
+                                st.write("Probabilities:")
+                                st.write(probs)
 
                         # show adaptation note
                         if note:
                             st.warning(f"Feature adaptation: {note}")
-                        if original is not None:
-                            st.write("Original features sent:", original)
-                        if used is not None:
-                            st.write("Features used by model:", used)
 
-                        # show full backend response
-                        st.write("Full backend response (debug):")
-                        st.json(pred_resp)
+                        # show original and used features as a small table
+                        if original is not None:
+                            try:
+                                df_orig = pd.DataFrame({"value": list(original)})
+                                df_orig.index = [f"f{i}" for i in range(len(df_orig))]
+                                st.markdown("**Original features sent:**")
+                                st.table(df_orig)
+                            except Exception:
+                                st.write("Original features:")
+                                st.write(original)
+
+                        if used is not None:
+                            try:
+                                df_used = pd.DataFrame({"value": list(used)})
+                                df_used.index = [f"f{i}" for i in range(len(df_used))]
+                                st.markdown("**Features used by model:**")
+                                st.table(df_used)
+                            except Exception:
+                                st.write("Used features:")
+                                st.write(used)
+
+                        # compact debug expander
+                        with st.expander("Show full backend response (debug)"):
+                            st.json(pred_resp)
 
             # --------------------
             # end of ML/heuristics block
