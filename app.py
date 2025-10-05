@@ -411,18 +411,17 @@ st.markdown(
 col_a, col_b, col_c = st.columns([2, 7, 1])
 with col_a:
     st.markdown('<div class="title-area">', unsafe_allow_html=True)
-    st.image(
-        "data:image/svg+xml;utf8," + base64.b64encode(
-            textwrap.dedent("""
-            <svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'>
-              <circle cx='12' cy='12' r='10' fill='#2b8cff'/>
-              <path d='M4 12c0-4.418 3.582-8 8-8a8 8 0 1 0 0 16c-4.418 0-8-3.582-8-8z' fill='#5cf7a1' opacity='0.15'/>
-              <path d='M9 9c1 0 1 2 2 2 0 1-1 1-1 2 1 1 2 0 3 0' stroke='#fff' stroke-width='0.5' fill='none'/>
-            </svg>
-            """).encode("utf-8")
-        ).decode("utf-8"),
-        width=56,
-    )
+    svg = textwrap.dedent("""
+<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'>
+  <circle cx='12' cy='12' r='10' fill='#2b8cff'/>
+  <path d='M4 12c0-4.418 3.582-8 8-8a8 8 0 1 0 0 16c-4.418 0-8-3.582-8-8z' fill='#5cf7a1' opacity='0.15'/>
+  <path d='M9 9c1 0 1 2 2 2 0 1-1 1-1 2 1 1 2 0 3 0' stroke='#fff' stroke-width='0.5' fill='none'/>
+</svg>
+""").strip()
+svg_b64 = base64.b64encode(svg.encode('utf-8')).decode('ascii')
+data_uri = f"data:image/svg+xml;base64,{svg_b64}"
+st.image(data_uri, width=56)
+
     st.markdown(f"<div class='app-title'>{I18N[lang]['title']}</div>", unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -954,3 +953,4 @@ st.markdown("<hr>", unsafe_allow_html=True)
 st.caption("Local cities only (data/cities.json). For best draggable marker experience install folium & streamlit-folium.")
 
 # End of file
+
