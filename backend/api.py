@@ -5,12 +5,11 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Dict
 
 app = FastAPI(title="WillItRain API")
 
-# Allow all origins (safe for hackathon/demo). Streamlit server-side requests don't need CORS,
-# but if you ever call backend directly from browser, this avoids CORS blocking.
+# CORS: дозволяємо все для демо / хакатону (у проді звузити)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,24 +18,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_PATH = os.environ.get("MODEL_PATH", "model/model.joblib")  # relative to backend/
-MODEL_URL = os.environ.get("MODEL_URL")  # optional: if you want backend to download model automatically
+# Конфіг
+MODEL_PATH = os.environ.get("MODEL_PATH", "model/model.joblib")  # path relative to backend/
+MODEL_URL = os.environ.get("MODEL_URL")  # optional: backend can download model if provided
 MODEL: Any = None
 MODEL_LOADED: bool = False
 
+# --- Request schema
 class PredictRequest(BaseModel):
-    # Either features (list) or raw aggregated fields
+    # або передавайте список фіч:
     features: Optional[List[float]] = None
+    # або "сирі" агреговані поля (фронтенд може відправити їх)
     temp: Optional[float] = None
     hum: Optional[float] = None
     wind: Optional[float] = None
     precip: Optional[float] = None
     uv: Optional[float] = None
 
+# --- Health
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": MODEL_LOADED}
 
+# --- Utility: search estimator inside arbitrary object
 def _find_estimator_in_obj(obj: Any) -> Tuple[Optional[Any], Optional[List[str]]]:
     """
     Recursively search `obj` for the first sub-object that has a callable `.predict`.
@@ -48,7 +52,7 @@ def _find_estimator_in_obj(obj: Any) -> Tuple[Optional[Any], Optional[List[str]]
     except Exception:
         pass
 
-    # dictionary: iterate keys
+    # dict: iterate keys
     if isinstance(obj, dict):
         for k, v in obj.items():
             est, path = _find_estimator_in_obj(v)
@@ -75,14 +79,15 @@ def _find_estimator_in_obj(obj: Any) -> Tuple[Optional[Any], Optional[List[str]]
 
     return None, None
 
-def _download_model_if_url():
+# --- Optional: download model if MODEL_URL provided
+def _download_model_if_url() -> bool:
     """
     If MODEL_URL set and model file not present, try download to MODEL_PATH.
-    (Simple implementation; Render environment should allow outbound HTTP.)
+    Returns True on success.
     """
-    import requests
     if not MODEL_URL:
         return False
+    import requests
     os.makedirs(os.path.dirname(MODEL_PATH) or ".", exist_ok=True)
     try:
         with requests.get(MODEL_URL, stream=True, timeout=60) as r:
@@ -97,6 +102,7 @@ def _download_model_if_url():
         print("Failed to download model from MODEL_URL:", e)
         return False
 
+# --- Load model robustly
 def load_model() -> bool:
     """
     Load model from MODEL_PATH.
@@ -107,7 +113,7 @@ def load_model() -> bool:
     MODEL_LOADED = False
     MODEL = None
 
-    # try to download if MODEL_PATH missing and MODEL_URL provided
+    # try download if missing
     if not os.path.exists(MODEL_PATH) and MODEL_URL:
         _download_model_if_url()
 
@@ -127,34 +133,33 @@ def load_model() -> bool:
             print("joblib.load failed:", e2)
             return False
 
-    # if raw itself is estimator
+    # if raw itself is estimator or contains estimator
     est, path = _find_estimator_in_obj(raw)
     if est is not None:
         MODEL = est
         MODEL_LOADED = True
         try:
-            # add a tiny debug meta (not necessary but helpful in logs)
             setattr(MODEL, "_loaded_from_info", {"model_path": MODEL_PATH, "found_path": path, "raw_type": str(type(raw))})
         except Exception:
             pass
         print("Estimator found in model file. path:", "->".join(path) if path else "(root)")
         return True
 
-    # nothing found: keep raw for inspection and report failure
+    # nothing found - keep raw for inspection and report failure
     MODEL = raw
     MODEL_LOADED = False
     print("No estimator with 'predict' found inside loaded object. raw type:", type(raw))
     return False
 
+# --- Diagnostic endpoint
 @app.get("/model_info")
 def model_info():
     """
     Diagnostic endpoint. Attempts to load model (if not loaded) and returns info about loaded object.
     """
-    # attempt load if not yet loaded
     ok = load_model() if not MODEL_LOADED else True
     if MODEL_LOADED:
-        info = {"status": "model_loaded", "estimator_type": str(type(MODEL))}
+        info: Dict[str, Any] = {"status": "model_loaded", "estimator_type": str(type(MODEL))}
         try:
             meta = getattr(MODEL, "_loaded_from_info", {})
             info.update(meta)
@@ -162,14 +167,14 @@ def model_info():
             pass
         return info
     else:
-        # MODEL may be raw object or None
         return {"status": "no_model_loaded", "raw_type": str(type(MODEL)), "model_path": MODEL_PATH}
 
+# --- Features extraction from request
 def features_from_request(req: PredictRequest) -> Optional[List[float]]:
     # prefer explicit features
     if req.features is not None:
         return list(req.features)
-    # fallback to simple aggregated fields
+    # fallback to simple aggregated fields in order [temp, hum, wind, precip, uv]
     if req.temp is None and req.hum is None:
         return None
     return [
@@ -180,6 +185,45 @@ def features_from_request(req: PredictRequest) -> Optional[List[float]]:
         float(req.uv or 0.0),
     ]
 
+# --- Adapt features to model expectations
+def _adapt_features_for_model(feats: List[float], model: Any) -> Tuple[List[float], str]:
+    """
+    Adjust the input features list to match model's expected number of features.
+    Returns (new_feats, note).
+    Rules:
+      - If model has attribute n_features_in_ (sklearn) => use it.
+      - If len(feats) == n_expected -> return as-is.
+      - If len(feats) > n_expected -> trim from right (keep first n_expected).
+      - If len(feats) < n_expected -> pad with zeros to the right.
+    Note: This is a pragmatic temporary approach for demo; correct approach is mapping by feature names.
+    """
+    note = ""
+    try:
+        n_expected = getattr(model, "n_features_in_", None)
+    except Exception:
+        n_expected = None
+
+    if n_expected is None:
+        return feats, "model_n_features_unknown_no_change"
+
+    try:
+        n_expected = int(n_expected)
+    except Exception:
+        return feats, "model_n_features_not_int"
+
+    if len(feats) == n_expected:
+        return feats, "ok_same_length"
+    elif len(feats) > n_expected:
+        new = feats[:n_expected]
+        note = f"trimmed_from_{len(feats)}_to_{n_expected}"
+        return new, note
+    else:
+        padding = [0.0] * (n_expected - len(feats))
+        new = feats + padding
+        note = f"padded_from_{len(feats)}_to_{n_expected}"
+        return new, note
+
+# --- Predict endpoint
 @app.post("/predict")
 def predict(req: PredictRequest):
     # ensure model loaded
@@ -190,18 +234,28 @@ def predict(req: PredictRequest):
     feats = features_from_request(req)
     if feats is None:
         raise HTTPException(status_code=400, detail="No features supplied.")
-    X = np.array([feats])
+
+    # adapt features for the model (trim/pad) and report note if changed
     try:
-        # If MODEL is still raw (not estimator), this will raise and be returned as 500 with detail
+        adapted_feats, note = _adapt_features_for_model(feats, MODEL)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Feature adaptation failed: {e}")
+
+    X = np.array([adapted_feats])
+    try:
         pred = MODEL.predict(X)
         probs = MODEL.predict_proba(X).tolist() if hasattr(MODEL, "predict_proba") else None
-        return {"prediction": str(pred[0]), "probs": probs}
+        resp: Dict[str, Any] = {"prediction": str(pred[0]), "probs": probs}
+        if note and note != "ok_same_length":
+            resp["note"] = note
+            resp["original_features"] = feats
+            resp["used_features"] = adapted_feats
+        return resp
     except Exception as e:
-        # include a bit more detail in logs for debugging
         print("Prediction failed:", repr(e))
         raise HTTPException(status_code=500, detail=f"Model prediction failed: {e}")
 
-# Try loading on startup (best-effort)
+# --- Try loading on startup
 @app.on_event("startup")
 def startup_event():
     try:
