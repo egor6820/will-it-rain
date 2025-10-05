@@ -1,0 +1,33 @@
+services:
+  streamlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamlit-app
+    environment:
+      - PORT=8501
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "8501:8501"
+    command: >
+      bash -lc
+      "streamlit run app.py
+       --server.port=${PORT}
+       --server.address=[::]
+       --server.enableCORS=false"
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastapi-backend
+    environment:
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    restart: unless-stopped

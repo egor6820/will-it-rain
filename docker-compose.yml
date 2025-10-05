@@ -1,0 +1,47 @@
+services:
+  streamlit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: streamlit-app
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    command: >
+      bash -lc
+      "streamlit run app.py
+       --server.port=${PORT}
+       --server.address=[::]
+       --server.enableCORS=false"
+    restart: unless-stopped
+    volumes:
+      - .:/app
+    depends_on:
+      - backend
+    networks:
+      mynetwork:
+        #ipv6_address: 2a01:d0:a6c9:4161::1
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fastapi-backend
+    environment:
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    networks:
+      mynetwork:
+        #ipv6_address: 2a01:d0:a6c9:4161::1
+
+networks:
+  mynetwork:
+    enable_ipv6: true
+    ipam:
+      driver: default
+      config:
+        - subnet: 2a01:d0:a6c9:4161::/64
+          gateway: 2a01:d0:a6c9:4161::1
