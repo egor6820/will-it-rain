@@ -1,6 +1,5 @@
 # app.py
-"""
-NASA Weather Globe — final merged app (Streamlit frontend)
+""" NASA Weather Globe — final merged app (Streamlit frontend)
 Features:
  - Local data/cities.json (fallback list included)
  - Folium + streamlit_folium for draggable marker & clicks (pydeck fallback)
@@ -8,9 +7,6 @@ Features:
  - Open-Meteo for weather, OpenTopoData for altitude (best-effort)
  - Heuristic risk scores + call to backend /predict (BACKEND_URL env)
  - Friendly UI, CSV export, MRU, nearest suggestions
-Notes:
- - Header search: input on top, actions (Search button + language select) placed below the input
-   to avoid wrapping and uneven button height. CSS ensures buttons/selects don't wrap.
 """
 from __future__ import annotations
 import json
@@ -259,13 +255,13 @@ def load_local_cities() -> pd.DataFrame:
             return df
         except Exception:
             try:
-                st.warning(I18N[DEFAULT_LANG]["local_missing"])
+                st.warning(I18N[get_lang()]["local_missing"])
             except Exception:
                 pass
             return pd.DataFrame(SMALL_FALLBACK)
     else:
         try:
-            st.info(I18N[DEFAULT_LANG]["local_missing"])
+            st.info(I18N[get_lang()]["local_missing"])
         except Exception:
             pass
         return pd.DataFrame(SMALL_FALLBACK)
@@ -341,6 +337,7 @@ def call_backend_prediction(aggregates: Dict[str,Any], timeout: int = 12) -> Opt
         if r.status_code == 200:
             return r.json()
         else:
+            # Attempt parse JSON error response
             try:
                 return {"error": f"{r.status_code} {r.text}"}
             except Exception:
@@ -393,15 +390,12 @@ st.markdown(
     .title-area {{ display:flex; align-items:center; gap:18px; padding:18px 28px; }}
     .app-title {{ font-size:28px; font-weight:700; margin:0; line-height:1; }}
     .search-row {{ display:block; padding: 6px 28px 18px 28px; }}
-    .search-box {{ width:100%; min-width:280px; }}
-    .search-actions {{ display:flex; gap:12px; align-items:center; margin-top:8px; }}
-    .search-btn > button {{ min-width:120px; height:40px; white-space:nowrap; }}
-    .lang-select .stSelectbox {{ min-width:96px; }}
+    .search-box {{ width:100%; }}
+    .search-subrow {{ display:flex; gap:12px; align-items:center; margin-top:8px; }}
+    .search-subrow .stButton button {{ white-space:nowrap; min-width:96px; }}
     .map-area {{ padding: 6px 28px 40px 28px; }}
     .sidebar .element-container {{ padding-top: 8px !important; }}
     .stFMap {{ height: {MAP_HEIGHT}px !important; }}
-    /* ensure Streamlit buttons don't wrap text */
-    .stButton>button {{ white-space:nowrap; }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -410,100 +404,84 @@ st.markdown(
 # Header
 col_a, col_b, col_c = st.columns([2, 7, 1])
 with col_a:
-    st.markdown('<div class="title-area">', unsafe_allow_html=True)
+    # --- logo: safe base64 data-URI (fixed) ---
     svg = textwrap.dedent("""
-<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'>
-  <circle cx='12' cy='12' r='10' fill='#2b8cff'/>
-  <path d='M4 12c0-4.418 3.582-8 8-8a8 8 0 1 0 0 16c-4.418 0-8-3.582-8-8z' fill='#5cf7a1' opacity='0.15'/>
-  <path d='M9 9c1 0 1 2 2 2 0 1-1 1-1 2 1 1 2 0 3 0' stroke='#fff' stroke-width='0.5' fill='none'/>
-</svg>
-""").strip()
-svg_b64 = base64.b64encode(svg.encode('utf-8')).decode('ascii')
-data_uri = f"data:image/svg+xml;base64,{svg_b64}"
-st.image(data_uri, width=56)
-
+    <svg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 24 24'>
+      <circle cx='12' cy='12' r='10' fill='#2b8cff'/>
+      <path d='M4 12c0-4.418 3.582-8 8-8a8 8 0 1 0 0 16c-4.418 0-8-3.582-8-8z' fill='#5cf7a1' opacity='0.15'/>
+      <path d='M9 9c1 0 1 2 2 2 0 1-1 1-1 2 1 1 2 0 3 0' stroke='#fff' stroke-width='0.5' fill='none'/>
+    </svg>
+    """).strip()
+    svg_b64 = base64.b64encode(svg.encode('utf-8')).decode('ascii')
+    data_uri = f"data:image/svg+xml;base64,{svg_b64}"
+    st.image(data_uri, width=56)
     st.markdown(f"<div class='app-title'>{I18N[lang]['title']}</div>", unsafe_allow_html=True)
-    st.markdown('</div>', unsafe_allow_html=True)
 
 with col_b:
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
     st.markdown(f"<div style='font-size:14px; color:var(--secondary-text-color)'>{I18N[lang]['search_placeholder']}</div>", unsafe_allow_html=True)
 
-    # Input first, actions (search + lang) below the input (prevents wrapping)
-    st.markdown('<div class="search-row">', unsafe_allow_html=True)
+    # --- SEARCH: input full width, button + lang under it ---
+    st.markdown("<div class='search-row'>", unsafe_allow_html=True)
     search_input = st.text_input("", key="header_search", placeholder=I18N[lang]["search_placeholder"], label_visibility="collapsed")
-    # actions row: left = search button, right = lang select
-    action_col, langcol = st.columns([1, 0.25])
-    with action_col:
+    # sub-row with button + lang selector (prevents button wrapping)
+    sub_col_left, sub_col_right = st.columns([1, 0.28])
+    with sub_col_left:
         if st.button(I18N[lang]["search_button"], key="header_search_btn"):
             qval = st.session_state.get("header_search", "")
-            # call processing function (defined below)
-            # process immediately
-            def coords_try(s: str) -> Optional[Tuple[float, float]]:
-                s2 = s.replace(",", " ").strip()
-                parts = s2.split()
-                if len(parts) == 2:
-                    try:
-                        return float(parts[0]), float(parts[1])
-                    except Exception:
-                        return None
-                return None
-
+            # reuse same processing function defined below (call directly)
+            # We'll implement processing inline to avoid duplication
             q = (qval or "").strip()
-            if not q:
-                st.warning("Empty query")
-            else:
+            if q:
+                def coords_try(s: str) -> Optional[Tuple[float, float]]:
+                    s2 = s.replace(",", " ").strip()
+                    parts = s2.split()
+                    if len(parts) == 2:
+                        try:
+                            return float(parts[0]), float(parts[1])
+                        except Exception:
+                            return None
+                    return None
                 c = coords_try(q)
                 if c:
                     lat_q, lon_q = c
                     st.session_state.pending = {"lat": float(lat_q), "lon": float(lon_q), "city": f"{lat_q:.5f},{lon_q:.5f}"}
                     st.session_state.nearby = []
-                    try:
-                        st.session_state.weather = get_weather_open_meteo(lat_q, lon_q, days=st.session_state.get("forecast_days", 7))
-                    except Exception:
-                        st.session_state.weather = None
+                    st.session_state.weather = get_weather_open_meteo(lat_q, lon_q, days=st.session_state.get("forecast_days", 7))
                     st.session_state.pending["altitude_m"] = get_altitude_opentopo(lat_q, lon_q)
                 else:
-                    # local substring search then nominatim fallback
+                    # local substring search
                     suggestions_local = []
                     if not cities_df.empty:
                         mask = cities_df["display_name"].str.lower().str.contains(q.lower())
                         local_hits = cities_df[mask].head(200)
                         for _, r in local_hits.iterrows():
                             suggestions_local.append(("LOCAL", r["display_name"], float(r["lat"]), float(r["lon"])))
-                    suggestions = suggestions_local.copy()
+                    suggestions = suggestions_local
                     if len(suggestions_local) < 10:
-                        try:
-                            nom = nominatim_search(q, limit=8)
-                            for it in nom:
-                                try:
-                                    name = it.get("display_name", "")
-                                    latn = float(it.get("lat"))
-                                    lonn = float(it.get("lon"))
-                                    suggestions.append(("NOM", name, latn, lonn))
-                                except Exception:
-                                    continue
-                        except Exception:
-                            pass
+                        nom = nominatim_search(q, limit=8)
+                        for it in nom:
+                            try:
+                                name = it.get("display_name", "")
+                                latn = float(it.get("lat"))
+                                lonn = float(it.get("lon"))
+                                suggestions.append(("NOM", name, latn, lonn))
+                            except Exception:
+                                continue
                     if suggestions:
                         kind, name, latn, lonn = suggestions[0]
                         st.session_state.pending = {"lat": float(latn), "lon": float(lonn), "city": name}
                         st.session_state.nearby = []
-                        try:
-                            st.session_state.weather = get_weather_open_meteo(latn, lonn, days=st.session_state.get("forecast_days", 7))
-                        except Exception:
-                            st.session_state.weather = None
+                        st.session_state.weather = get_weather_open_meteo(latn, lonn, days=st.session_state.get("forecast_days", 7))
                         st.session_state.pending["altitude_m"] = get_altitude_opentopo(latn, lonn)
                     else:
                         st.warning("No matches found for query.")
-    with langcol:
-        # language select styled small
-        lang_select = st.selectbox("", options=["ua", "en"], index=0 if lang == "ua" else 1, key="lang_select_small", label_visibility="collapsed")
+    with sub_col_right:
+        lang_select = st.selectbox("", options=["ua", "en"], index=0 if lang == "ua" else 1, key="lang_select_small")
         if lang_select != st.session_state.lang:
             st.session_state.lang = lang_select
             lang = get_lang()
-
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 with col_c:
     st.write("")
@@ -520,12 +498,9 @@ if st.button(I18N[lang]["search_nominatim"], key="nominatim_fallback"):
             sel = st.selectbox("Nominatim matches:", ["---"] + opts, key="nominatim_matches")
             if sel and sel != "---":
                 disp, lat_s, lon_s = sel.split("|", 2)
-                st.session_state.pending = {"lat": float(lat_s), "lon": float(lat_s), "city": disp}
+                st.session_state.pending = {"lat": float(lat_s), "lon": float(lon_s), "city": disp}
                 st.session_state.nearby = []
-                try:
-                    st.session_state.weather = get_weather_open_meteo(float(lat_s), float(lon_s), days=st.session_state.get("forecast_days", 7))
-                except Exception:
-                    st.session_state.weather = None
+                st.session_state.weather = get_weather_open_meteo(float(lat_s), float(lon_s), days=st.session_state.get("forecast_days", 7))
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(float(lat_s), float(lon_s))
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -618,10 +593,7 @@ with st.sidebar:
             if mask.any():
                 rr = cities_df[mask].iloc[0]
                 st.session_state.pending = {"lat": float(rr["lat"]), "lon": float(rr["lon"]), "city": r}
-                try:
-                    st.session_state.weather = get_weather_open_meteo(rr["lat"], rr["lon"], days=st.session_state["forecast_days"])
-                except Exception:
-                    st.session_state.weather = None
+                st.session_state.weather = get_weather_open_meteo(rr["lat"], rr["lon"], days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(rr["lat"], rr["lon"])
 
 # -------------------------
@@ -687,10 +659,7 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
                     for i in idxs:
                         nearest.append({"display_name": city_disp[i], "lat": float(city_lats[i]), "lon": float(city_lons[i]), "dist_km": float(d[i])})
                     st.session_state.nearby = nearest
-                try:
-                    st.session_state.weather = get_weather_open_meteo(latc, lonc, days=st.session_state["forecast_days"])
-                except Exception:
-                    st.session_state.weather = None
+                st.session_state.weather = get_weather_open_meteo(latc, lonc, days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(latc, lonc)
                 st.session_state.map_used = True
         drag = map_data.get("last_marker_drag") or map_data.get("last_marker")
@@ -705,10 +674,7 @@ if USE_FOLIUM and USE_STREAMLIT_FOLIUM:
                     for i in idxs:
                         nearest.append({"display_name": city_disp[i], "lat": float(city_lats[i]), "lon": float(city_lons[i]), "dist_km": float(d[i])})
                     st.session_state.nearby = nearest
-                try:
-                    st.session_state.weather = get_weather_open_meteo(latm, lonm, days=st.session_state["forecast_days"])
-                except Exception:
-                    st.session_state.weather = None
+                st.session_state.weather = get_weather_open_meteo(latm, lonm, days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(latm, lonm)
                 st.session_state.map_used = True
 
@@ -743,10 +709,7 @@ with left_col:
             btn_label = f"{item['display_name']} — {item['dist_km']:.1f} km"
             if st.button(btn_label, key=f"near_{i}"):
                 st.session_state.pending = {"lat": item["lat"], "lon": item["lon"], "city": item["display_name"]}
-                try:
-                    st.session_state.weather = get_weather_open_meteo(item["lat"], item["lon"], days=st.session_state["forecast_days"])
-                except Exception:
-                    st.session_state.weather = None
+                st.session_state.weather = get_weather_open_meteo(item["lat"], item["lon"], days=st.session_state["forecast_days"])
                 st.session_state.pending["altitude_m"] = get_altitude_opentopo(item["lat"], item["lon"])
                 st.session_state.nearby = []
 
@@ -934,7 +897,6 @@ with left_col:
                             st.write(used)
                     with st.expander("Show full backend response (debug)"):
                         st.json(pred_resp)
-
 with right_col:
     st.markdown("### Map quick")
     try:
@@ -953,4 +915,3 @@ st.markdown("<hr>", unsafe_allow_html=True)
 st.caption("Local cities only (data/cities.json). For best draggable marker experience install folium & streamlit-folium.")
 
 # End of file
-
