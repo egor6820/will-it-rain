@@ -771,25 +771,55 @@ if st.session_state.pending or st.session_state.confirmed:
                             st.warning(f"Feature adaptation: {note}")
 
                         # show original and used features as a small table
-                        if original is not None:
+                        # Show original features with human-readable names and units
+                            FEATURE_DEFS = [
+                                ("temp", "Max temp (°C)", "Maximum hourly temperature"),
+                                ("hum", "Mean humidity (%)", "Average relative humidity"),
+                                ("wind", "Max wind (m/s)", "Peak wind speed"),
+                                ("precip", "Mean precip prob (%)", "Average precipitation probability"),
+                                ("uv", "Mean UV index", "Average UV index"),
+                            ]
+
+                            def _features_to_df(vals):
+                                rows = []
+                                for i, v in enumerate(list(vals)):
+                                    name, label, desc = FEATURE_DEFS[i] if i < len(FEATURE_DEFS) else (f"f{i}", f"f{i}", "")
+                                    if name == "temp":
+                                        unit = "°C"
+                                    elif name in ("hum", "precip"):
+                                        unit = "%"
+                                    elif name == "wind":
+                                        unit = "m/s"
+                                    elif name == "uv":
+                                        unit = "index"
+                                    else:
+                                        unit = ""
+                                    try:
+                                        val = float(v)
+                                    except Exception:
+                                        val = v
+                                    rows.append({"feature": f"f{i}", "name": name, "label": label, "value": val, "unit": unit, "description": desc})
+                                return pd.DataFrame(rows)
+
                             try:
-                                df_orig = pd.DataFrame({"value": list(original)})
-                                df_orig.index = [f"f{i}" for i in range(len(df_orig))]
-                                st.markdown("**Original features sent:**")
-                                st.table(df_orig)
+                                df_orig = _features_to_df(original)
+                                st.markdown("**Original features sent (friendly):**")
+                                st.dataframe(df_orig.set_index("feature")[ ["label","value","unit","description"] ])
+                                # small human-readable legend
+                                legend_lines = [f"{r['feature']} → {r['label']}" for _, r in df_orig.iterrows()]
+                                st.caption("Feature mapping: " + ", ".join(legend_lines))
                             except Exception:
                                 st.write("Original features:")
                                 st.write(original)
 
                         if used is not None:
-                            try:
-                                df_used = pd.DataFrame({"value": list(used)})
-                                df_used.index = [f"f{i}" for i in range(len(df_used))]
-                                st.markdown("**Features used by model:**")
-                                st.table(df_used)
-                            except Exception:
-                                st.write("Used features:")
-                                st.write(used)
+                                try:
+                                    df_used = _features_to_df(used)
+                                    st.markdown("**Features used by model (friendly):**")
+                                    st.dataframe(df_used.set_index("feature")[ ["label","value","unit","description"] ])
+                                except Exception:
+                                    st.write("Used features:")
+                                    st.write(used)
 
                         # compact debug expander
                         with st.expander("Show full backend response (debug)"):
