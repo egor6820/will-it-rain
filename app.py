@@ -1,7 +1,7 @@
 # app.py
 """
-NASA Weather Globe — improved UI (user-friendly summary + debug expander)
-Replace your current app.py with this file.
+NASA Weather Globe — Hybrid (improved UI + ML & heuristics display)
+Replace existing app.py with this file.
 """
 
 import json
@@ -41,7 +41,7 @@ except Exception:
 # Config & constants
 # --------------------
 st.set_page_config(page_title="NASA Weather Globe", page_icon="🌍", layout="wide")
-MAP_HEIGHT = 720
+MAP_HEIGHT = 760
 
 LOCAL_DATA_DIR = Path("data")
 LOCAL_CITIES_FILE = LOCAL_DATA_DIR / "cities.json"
@@ -56,11 +56,13 @@ TEMP_MIN = -50
 TEMP_MAX = 50
 NEAREST_SUGGESTIONS = 8
 
+# Backend URL (set via env in Render). Default to localhost for local dev.
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
 
 # --------------------
-# i18n minimal
+# i18n (EN/UA minimal)
 # --------------------
+LANGS = ["en", "ua"]
 DEFAULT_LANG = "en"
 I18N = {
     "en": {
@@ -70,6 +72,7 @@ I18N = {
         "modis_date": "MODIS date",
         "show_modis": "Show MODIS LST (NASA GIBS)",
         "base_map": "Base map",
+        "legend_caption": "Temperature legend (-50°C … 50°C)",
         "pending": "PENDING",
         "confirmed": "CONFIRMED",
         "confirm": "Confirm",
@@ -85,12 +88,43 @@ I18N = {
         "lang_toggle": "EN/UA",
         "loading_local": "Loading local city DB...",
         "local_missing": "Local cities.json not found — using small fallback.",
+        "intro": "Plan an outdoor event: pick a location on the map or search by city/coordinates, then confirm to load weather and ML prediction.",
+        "heuristics_caption": "Local heuristics (quick estimates) — independent of ML model.",
+        "ml_no_model": "ML: no aggregates or backend unavailable.",
+        "ml_debug": "Full backend response (debug):"
+    },
+    "ua": {
+        "title": "NASA Weather Globe — Гібрид",
+        "search_placeholder": "Пошук: місто або координати (напр. Київ або 50.45,30.52)",
+        "map_options": "Налаштування карти",
+        "modis_date": "Дата MODIS",
+        "show_modis": "Показати MODIS LST (NASA GIBS)",
+        "base_map": "Базова карта",
+        "legend_caption": "Легенда температури (-50°C … 50°C)",
+        "pending": "ЧЕК",
+        "confirmed": "ПІДТВЕРДЖЕНО",
+        "confirm": "Підтвердити",
+        "cancel": "Скасувати",
+        "nearby_quick": "Поблизу (швидко)",
+        "download_csv": "Завантажити hourly CSV",
+        "next_48h": "Наступні 48 год",
+        "seven_day": "7 днів",
+        "no_weather": "Підтвердіть точку, щоб завантажити погоду.",
+        "recent": "Останні вибори",
+        "nearest_label": "Найближчі міста (оберіть)",
+        "coords_label": "Координати",
+        "lang_toggle": "EN/UA",
+        "loading_local": "Завантаження локальної БД міст...",
+        "local_missing": "Файл data/cities.json не знайдено — використовується малий список.",
+        "intro": "Плануйте захід на свіжому повітрі: оберіть місце на карті або знайдіть місто/координати, потім підтвердіть, щоб завантажити погоду та ML-прогноз.",
+        "heuristics_caption": "Локальні евристики (швидко) — незалежні від ML-моделі.",
+        "ml_no_model": "ML: немає агрегатів або бекенд недоступний.",
+        "ml_debug": "Повна відповідь бекенду (debug):"
     }
 }
-lang = "en"
 
 # --------------------
-# Utilities
+# Utilities: colors & legend
 # --------------------
 def temp_to_hex(t: Optional[float], vmin=TEMP_MIN, vmax=TEMP_MAX) -> str:
     if t is None:
@@ -137,7 +171,7 @@ def haversine_array(lat1, lon1, lat2_array, lon2_array):
     return R * c
 
 # --------------------
-# Network helpers
+# Network helpers (cached)
 # --------------------
 @st.cache_data(ttl=60*60)
 def nominatim_search(q: str, limit: int = 12):
@@ -180,10 +214,10 @@ def get_altitude_opentopo(lat: float, lon: float):
     return None
 
 # --------------------
-# Local city DB
+# City DB: local only
 # --------------------
 SMALL_FALLBACK = [
-    {"display_name":"Kyiv, UA", "lat":50.4501, "lon":30.5234},
+    {"display_name":"Kyiv, Ukraine", "lat":50.4501, "lon":30.5234},
     {"display_name":"Moscow, Russia", "lat":55.7558, "lon":37.6173},
     {"display_name":"Warsaw, Poland", "lat":52.2297, "lon":21.0122},
     {"display_name":"Berlin, Germany", "lat":52.52, "lon":13.405},
@@ -221,17 +255,20 @@ def load_local_cities():
             df = df[["display_name","lat","lon"]]
             return df
         except Exception:
-            st.warning(I18N[lang]["local_missing"])
+            # get_lang defined later; safe because load_local_cities is called after session_state init below
+            st.warning(I18N[get_lang()]["local_missing"])
             return pd.DataFrame(SMALL_FALLBACK)
     else:
-        st.info(I18N[lang]["local_missing"])
+        st.info(I18N[get_lang()]["local_missing"])
         return pd.DataFrame(SMALL_FALLBACK)
 
 # --------------------
 # Session state init
 # --------------------
+if "lang" not in st.session_state:
+    st.session_state.lang = DEFAULT_LANG
 if "confirmed" not in st.session_state:
-    st.session_state.confirmed = {"lat": 50.4501, "lon": 30.5234, "city": "Kyiv, UA"}
+    st.session_state.confirmed = {"lat": 50.4501, "lon": 30.5234, "city": "Kyiv, Ukraine"}
 if "pending" not in st.session_state:
     st.session_state.pending = None
 if "weather" not in st.session_state:
@@ -241,15 +278,21 @@ if "nearby" not in st.session_state:
 if "mru" not in st.session_state:
     st.session_state.mru = []
 
-# Load cities
+def get_lang():
+    return st.session_state.lang if "lang" in st.session_state else DEFAULT_LANG
+
+lang = get_lang()
+
+# Load local cities
 with st.spinner(I18N[lang]["loading_local"]):
     cities_df = load_local_cities()
+
 city_lats = cities_df["lat"].to_numpy()
 city_lons = cities_df["lon"].to_numpy()
 city_disp = cities_df["display_name"].to_numpy()
 
 # --------------------
-# Feature extraction & backend call
+# Helper: extract features from weather (same as backend expects)
 # --------------------
 def extract_simple_features_from_weather(w: Dict[str,Any]):
     if not w:
@@ -274,7 +317,7 @@ def call_backend_prediction(aggregates: Dict[str,Any]):
     if not aggregates:
         return None
     try:
-        r = requests.post(f"{BACKEND_URL.rstrip('/')}/predict", json=aggregates, timeout=15)
+        r = requests.post(f"{BACKEND_URL.rstrip('/')}/predict", json=aggregates, timeout=12)
         if r.status_code == 200:
             return r.json()
         else:
@@ -286,9 +329,14 @@ def call_backend_prediction(aggregates: Dict[str,Any]):
         return {"error": str(e)}
 
 # --------------------
-# Heuristics
+# Heuristics: compute local risk scores 0..1 for categories
 # --------------------
 def compute_heuristic_scores(weather: Dict[str,Any]) -> Dict[str,float]:
+    """
+    Compute simple heuristic scores (0..1) for:
+      - very_hot, very_cold, very_windy, very_wet, very_uncomfortable
+    These are independent of ML model; just for UI & fallback.
+    """
     scores = {"very_hot":0.0,"very_cold":0.0,"very_windy":0.0,"very_wet":0.0,"very_uncomfortable":0.0}
     if not weather:
         return scores
@@ -306,86 +354,41 @@ def compute_heuristic_scores(weather: Dict[str,Any]) -> Dict[str,float]:
     mean_hum = float(np.mean(humid)) if humid.size else 0.0
     max_app = float(np.max(app_temps)) if app_temps.size else max_temp
 
+    # very_hot: scale (30..45) -> (0..1)
     scores["very_hot"] = min(1.0, max(0.0, (max_temp - 30.0) / 15.0))
+    # very_cold: scale (-30..0) -> (1..0)
     scores["very_cold"] = min(1.0, max(0.0, (0.0 - min_temp) / 30.0))
+    # very_windy: scale (10..30) m/s -> (0..1)
     scores["very_windy"] = min(1.0, max(0.0, (max_wind - 10.0) / 20.0))
+    # very_wet: use precip prob percent (0..100) -> (0..1)
     scores["very_wet"] = min(1.0, max(0.0, avg_precip / 100.0))
+    # very_uncomfortable: combine apparent temp and humidity
+    # base: if apparent > 30 or humidity > 80 => uncomfortable
     discomfort = 0.0
     if max_app > 25:
-        discomfort += (max_app - 25.0) / 20.0
+        discomfort += (max_app - 25.0) / 20.0  # scaled
     if mean_hum > 50:
         discomfort += (mean_hum - 50.0) / 100.0
     scores["very_uncomfortable"] = min(1.0, max(0.0, discomfort))
+
     return scores
 
 def pct(v: float) -> int:
     return int(round(100 * float(v)))
 
 # --------------------
-# Small helpers: format prediction
-# --------------------
-def sigmoid(x: float) -> float:
-    try:
-        return 1 / (1 + math.exp(-float(x)))
-    except Exception:
-        return 0.5
-
-def interpret_prediction(pred_raw: Any, probs: Optional[Any]=None) -> Dict[str,Any]:
-    """
-    Normalize model output for user:
-    - if model returns numeric (regressor), map via sigmoid -> percent
-    - if model returns class/probs, use probs if present
-    Returns dict with keys: label, percent, details
-    """
-    result = {"label":"unknown", "percent":None, "details":{}}
-    try:
-        # if probs present and looks like list of probabilities -> show top class
-        if probs:
-            # assume probs is list or list-of-lists with first element
-            if isinstance(probs, list) and len(probs) and isinstance(probs[0], (list,tuple)):
-                p = np.array(probs[0], dtype=float)
-                top_idx = int(np.argmax(p))
-                result["label"] = f"class_{top_idx}"
-                result["percent"] = float(p[top_idx])
-                result["details"]["probs"] = p.tolist()
-                return result
-            elif isinstance(probs, list):
-                p = np.array(probs, dtype=float)
-                # if single-d array
-                if p.size == 1:
-                    # probability for positive class
-                    result["percent"] = float(p[0])
-                    result["label"] = "positive_prob"
-                    return result
-        # Else, numeric prediction -> map with sigmoid to percent for user friendliness
-        val = float(pred_raw)
-        prob = sigmoid(val)  # 0..1
-        # interpret percent thresholds
-        if prob >= 0.75:
-            label = "High"
-        elif prob >= 0.55:
-            label = "Likely"
-        elif prob >= 0.45:
-            label = "Possible"
-        elif prob >= 0.25:
-            label = "Unlikely"
-        else:
-            label = "Very unlikely"
-        result["label"] = label
-        result["percent"] = prob
-        result["details"]["raw_value"] = val
-        return result
-    except Exception:
-        return result
-
-# --------------------
 # UI layout
 # --------------------
 st.markdown("<style>.full-map > div { height: 90vh !important; }</style>", unsafe_allow_html=True)
+# Top intro
+st.markdown("## " + I18N[lang]["title"])
+st.markdown(I18N[lang]["intro"])
+st.markdown("---")
+
 left_col, right_col = st.columns([6, 1.2])
 
 with left_col:
-    st.title("NASA Weather Globe — Hybrid")
+    st.subheader("Search / Pick location")
     search_input = st.text_input(I18N[lang]["search_placeholder"], "")
     suggestions = []
     q = search_input.strip()
@@ -443,7 +446,7 @@ with left_col:
                 sel = st.selectbox("Nominatim matches:", ["---"] + opts, key="nom_matches")
                 if sel and sel != "---":
                     disp, lat_s, lon_s = sel.split("|",2)
-                    st.session_state.pending = {"lat": float(lat_s), "lon": float(lon_s), "city": disp}
+                    st.session_state.pending = {"lat": float(lat_s), "lon": float(lat_s), "city": disp}
                     st.session_state.nearby = []
                     st.session_state.weather = get_weather_open_meteo(float(lat_s), float(lon_s), days=7)
                     st.session_state.pending["altitude_m"] = get_altitude_opentopo(float(lat_s), float(lon_s))
@@ -468,7 +471,7 @@ hmin = highlight_temp - highlight_delta; hmax = highlight_temp + highlight_delta
 active = st.session_state.pending if st.session_state.pending else st.session_state.confirmed
 
 # --------------------
-# Map render & interactions
+# Map rendering (folium or pydeck fallback)
 # --------------------
 st.subheader("🗺 Map — click to pick coordinates, drag marker to move, then Confirm")
 
@@ -585,7 +588,7 @@ else:
         st.error("No mapping library available. Install folium or pydeck.")
 
 # --------------------
-# Sidebar: details & user-friendly ML display
+# Sidebar detail & ML logic
 # --------------------
 if st.session_state.pending or st.session_state.confirmed:
     with st.sidebar:
@@ -636,7 +639,6 @@ if st.session_state.pending or st.session_state.confirmed:
             if cur:
                 st.metric("🌡 Temperature (now)", f"{cur.get('temperature')} °C")
                 st.metric("💨 Wind (m/s)", f"{cur.get('windspeed')} m/s")
-
             hourly = w.get("hourly", {})
             if hourly and "time" in hourly:
                 df_hour = pd.DataFrame({
@@ -654,7 +656,6 @@ if st.session_state.pending or st.session_state.confirmed:
                 st.dataframe(df_hour.head(12).set_index("time"))
                 csv = df_hour.to_csv(index=False).encode("utf-8")
                 st.download_button(I18N[lang]["download_csv"], data=csv, file_name="hourly.csv", mime="text/csv")
-
             daily = w.get("daily", {})
             if daily and "time" in daily:
                 df_daily = pd.DataFrame({
@@ -666,7 +667,6 @@ if st.session_state.pending or st.session_state.confirmed:
                 })
                 st.markdown(f"### {I18N[lang]['seven_day']}")
                 st.dataframe(df_daily.set_index("date").head(7))
-
             alt_local = None
             if st.session_state.confirmed and "altitude_m" in st.session_state.confirmed:
                 alt_local = st.session_state.confirmed.get("altitude_m")
@@ -676,110 +676,105 @@ if st.session_state.pending or st.session_state.confirmed:
                 st.write(f"⛰ Altitude (OpenTopoData): {alt_local:.1f} m")
 
             # --------------------
-            # ML & heuristics: compute + display user-friendly summary
+            # ML: call backend + display + heuristics
             # --------------------
             aggregates = extract_simple_features_from_weather(st.session_state.weather)
             pred_resp = None
             if aggregates:
                 pred_resp = call_backend_prediction(aggregates)
 
+            # Heuristic fallback scores
             heur = compute_heuristic_scores(st.session_state.weather)
 
+            # --- Friendly full ML & heuristics display ---
             st.markdown("---")
-            st.subheader("🔮 Weather summary")
+            st.subheader("🔮 Weather risk — ML + Heuristics")
 
-            # User-friendly summary card
-            summary_col1, summary_col2 = st.columns([2,1])
-            with summary_col1:
-                # Short human message built from heuristics and ML
-                # Determine main "headline"
-                headline = ""
-                subtxt = ""
-                if pred_resp and isinstance(pred_resp, dict) and pred_resp.get("error"):
-                    headline = "ML unavailable"
-                    subtxt = "Backend returned an error. Showing heuristic summary."
-                else:
-                    # interpret ML if present
-                    if pred_resp and isinstance(pred_resp, dict) and pred_resp.get("prediction") is not None:
-                        interp = interpret_prediction(pred_resp.get("prediction"), pred_resp.get("probs"))
-                        pct_val = interp.get("percent")
-                        if pct_val is not None:
-                            pct_show = int(round(100 * float(pct_val)))
-                            headline = f"Chance of adverse conditions: {pct_show}%"
-                            subtxt = f"ML says: {interp.get('label')}"
-                        else:
-                            headline = f"Model output: {str(pred_resp.get('prediction'))}"
-                            subtxt = "Interpreting model output..."
-                    else:
-                        # fallback to heuristics: take max of heuristics as main
-                        mx_key = max(heur.keys(), key=lambda k: heur.get(k,0))
-                        mx_val = heur.get(mx_key, 0.0)
-                        headline = f"Heuristic risk: {pct(mx_val)}%"
-                        subtxt = f"Top factor: {mx_key.replace('_',' ')}"
+            # Left: heuristics (bars). Right: ML result & debug
+            hcol1, hcol2 = st.columns([1,1.2])
 
-                st.markdown(f"### {headline}")
-                st.write(subtxt)
+            with hcol1:
+                st.write("**Local heuristics (quick)**")
+                # display each with progress
+                for key, label in [
+                    ("very_hot","Very hot"),
+                    ("very_cold","Very cold"),
+                    ("very_windy","Very windy"),
+                    ("very_wet","Very wet"),
+                    ("very_uncomfortable","Very uncomfortable"),
+                ]:
+                    score = heur.get(key, 0.0)
+                    st.write(f"{label}: {pct(score)}%")
+                    st.progress(pct(score))
+                st.caption(I18N[lang]["heuristics_caption"])
 
-                # Small bullets with main numeric metrics
-                try:
-                    cur_weather = st.session_state.weather.get("current_weather", {})
-                    st.write(f"**Now:** {cur_weather.get('temperature','?')} °C  — wind {cur_weather.get('windspeed','?')} m/s")
-                except Exception:
-                    pass
-
-                # Short human advice based on heuristics + ml
-                advice = []
-                if heur.get("very_windy",0) >= 0.7:
-                    advice.append("⚠️ Strong winds — secure light objects.")
-                if heur.get("very_wet",0) >= 0.5:
-                    advice.append("🌧️ High precip probability — bring umbrella.")
-                if heur.get("very_uncomfortable",0) >= 0.6:
-                    advice.append("🥵 Conditions uncomfortable — stay hydrated.")
-                if pred_resp and isinstance(pred_resp, dict) and pred_resp.get("prediction") is not None:
-                    interp = interpret_prediction(pred_resp.get("prediction"), pred_resp.get("probs"))
-                    # if ML predicts high risk
-                    if interp.get("percent") and interp.get("percent") >= 0.75:
-                        advice.append("🔴 ML: High risk — consider changing plans.")
-                if not advice:
-                    advice.append("✅ No special precautions needed now.")
-                for a in advice:
-                    st.write(a)
-
-            with summary_col2:
-                st.write("Quick status")
-                st.metric("Heur. wind", f"{pct(heur.get('very_windy',0))}%")
-                st.metric("Heur. wet", f"{pct(heur.get('very_wet',0))}%")
-                st.metric("Heur. discomfort", f"{pct(heur.get('very_uncomfortable',0))}%")
-
-            # Detailed debug section (hidden by default)
-            with st.expander("Показати деталі / debug (для розробника)"):
-                st.write("Aggregates sent to backend:")
-                st.json(aggregates)
-                st.write("---")
-                st.write("Heuristic scores:")
-                st.json(heur)
-
-                st.write("---")
-                st.write("Backend response:")
+            with hcol2:
+                st.write("**ML model response**")
                 if pred_resp is None:
-                    st.write("No backend response (backend unreachable or no aggregates).")
+                    st.info(I18N[lang]["ml_no_model"])
                 else:
-                    st.json(pred_resp)
-                    # if note present (feature adaptation), explain in human terms
-                    note = pred_resp.get("note") if isinstance(pred_resp, dict) else None
-                    if note:
-                        if "trimmed" in note:
-                            st.warning("Model expected fewer features; some inputs were ignored. Ask ML team for feature order.")
-                        if "padded" in note:
-                            st.info("Model expected more features; missing features were padded with zeros.")
-                    # original / used features
-                    if isinstance(pred_resp, dict) and pred_resp.get("original_features") is not None:
-                        st.write("Original features sent:")
-                        st.write(pred_resp.get("original_features"))
-                    if isinstance(pred_resp, dict) and pred_resp.get("used_features") is not None:
-                        st.write("Features used by model:")
-                        st.write(pred_resp.get("used_features"))
+                    # error?
+                    if isinstance(pred_resp, dict) and pred_resp.get("error"):
+                        st.error(f"Prediction error (backend): {pred_resp.get('error')}")
+                    else:
+                        # extract
+                        pred_raw = pred_resp.get("prediction") if isinstance(pred_resp, dict) else pred_resp
+                        probs = pred_resp.get("probs") if isinstance(pred_resp, dict) else None
+                        note = pred_resp.get("note") if isinstance(pred_resp, dict) else None
+                        original = pred_resp.get("original_features") if isinstance(pred_resp, dict) else None
+                        used = pred_resp.get("used_features") if isinstance(pred_resp, dict) else None
 
+                        # display prediction (numeric or class)
+                        display_pred = pred_raw
+                        pred_is_num = False
+                        try:
+                            display_pred = round(float(pred_raw), 3)
+                            pred_is_num = True
+                        except Exception:
+                            pred_is_num = False
+
+                        st.markdown("**Prediction (raw):**")
+                        st.write(display_pred)
+
+                        # If probabilities — show them
+                        if probs:
+                            st.write("**Probabilities:**")
+                            st.write(probs)
+
+                        # Interpret numeric prediction into simple labels (temporary)
+                        def interpret_numeric_pred(v):
+                            try:
+                                vv = float(v)
+                            except Exception:
+                                return "unknown"
+                            if vv >= 2.0:
+                                return "Very likely"
+                            if vv >= 1.0:
+                                return "Likely"
+                            if vv >= 0.0:
+                                return "Possible"
+                            if vv < 0.0:
+                                return "Unlikely"
+                            return "unknown"
+
+                        label = interpret_numeric_pred(pred_raw)
+                        st.info(f"Interpreted: **{label}**")
+
+                        # show adaptation note
+                        if note:
+                            st.warning(f"Feature adaptation: {note}")
+                        if original is not None:
+                            st.write("Original features sent:", original)
+                        if used is not None:
+                            st.write("Features used by model:", used)
+
+                        # show full backend response in collapsible debug box
+                        with st.expander(I18N[lang]["ml_debug"], expanded=False):
+                            st.json(pred_resp)
+
+            # --------------------
+            # end of ML/heuristics block
+            # --------------------
         else:
             st.info(I18N[lang]["no_weather"])
 
@@ -794,10 +789,12 @@ if st.session_state.pending or st.session_state.confirmed:
                     st.session_state.weather = get_weather_open_meteo(rr["lat"], rr["lon"], days=7)
                     st.session_state.pending["altitude_m"] = get_altitude_opentopo(rr["lat"], rr["lon"])
 
-# language toggle small
+# language toggle
 def lang_toggle_ui():
-    if st.button(I18N[lang]["lang_toggle"]):
-        pass  # placeholder
+    cur = st.session_state.lang
+    other = "ua" if cur == "en" else "en"
+    if st.button(I18N[cur]["lang_toggle"]):
+        st.session_state.lang = other
 
 lang_toggle_ui()
 
